@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: order-pricing-promotion-engine
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/pricing}
+    username: ${SPRING_DATASOURCE_USERNAME:pricing}
+    password: ${SPRING_DATASOURCE_PASSWORD:pricing}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+server:
+  port: 8080

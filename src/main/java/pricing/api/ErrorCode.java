@@ -1,0 +1,11 @@
+package pricing.api;
+
+public enum ErrorCode {
+    VALIDATION_ERROR,
+    INTERNAL_ERROR,
+    COUPON_NOT_FOUND,
+    COUPON_INACTIVE,
+    COUPON_EXPIRED,
+    INVALID_PROMOTION_TYPE,
+    PROMOTION_CONFLICT
+}
