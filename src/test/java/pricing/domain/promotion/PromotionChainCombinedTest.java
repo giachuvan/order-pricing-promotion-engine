@@ -14,6 +14,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PromotionChainCombinedTest {
 
@@ -44,5 +45,26 @@ class PromotionChainCombinedTest {
         assertEquals(new BigDecimal("147.50"), result.totalDiscount());
         assertEquals(new BigDecimal("102.50"), result.finalPrice());
         assertEquals(4, result.discounts().size());
+    }
+
+    @Test
+    void floorsFinalPriceAtZeroWhenDiscountsExceedSubtotal() {
+        PricingContext context = new PricingContext(
+                new BigDecimal("50"),
+                List.of(new LineItem("A100", new BigDecimal("50"), 1)),
+                CustomerType.VIP,
+                null
+        );
+
+        List<PromotionRule> rules = List.of(
+                new PercentageDiscountRule(new BigDecimal("50")),
+                new VipDiscountRule(new BigDecimal("50")),
+                new CouponRule(new CouponDiscount("BIG", new BigDecimal("100")))
+        );
+
+        var result = new PromotionChain().apply(context, rules);
+
+        assertEquals(BigDecimal.ZERO, result.finalPrice());
+        assertTrue(result.totalDiscount().compareTo(context.subtotal()) > 0);
     }
 }

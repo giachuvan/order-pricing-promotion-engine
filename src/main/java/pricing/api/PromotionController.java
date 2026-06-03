@@ -2,7 +2,8 @@ package pricing.api;
 
 import pricing.api.dto.CreatePromotionRequest;
 import pricing.api.dto.PromotionResponse;
-import pricing.application.PromotionService;
+import pricing.api.mapper.PromotionRequestMapper;
+import pricing.application.PromotionUseCase;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,20 +19,26 @@ import java.util.List;
 @RequestMapping("/api/v1/promotions")
 public class PromotionController {
 
-    private final PromotionService promotionService;
+    private final PromotionUseCase promotionUseCase;
 
-    public PromotionController(PromotionService promotionService) {
-        this.promotionService = promotionService;
+    public PromotionController(PromotionUseCase promotionUseCase) {
+        this.promotionUseCase = promotionUseCase;
     }
 
     @GetMapping
     public ApiResponse<List<PromotionResponse>> listActive() {
-        return ApiResponse.success(promotionService.listActive());
+        return ApiResponse.success(
+                promotionUseCase.listActive().stream()
+                        .map(PromotionResponse::from)
+                        .toList()
+        );
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<PromotionResponse> create(@Valid @RequestBody CreatePromotionRequest request) {
-        return ApiResponse.success(promotionService.create(request));
+        return ApiResponse.success(
+                PromotionResponse.from(promotionUseCase.create(PromotionRequestMapper.toCommand(request)))
+        );
     }
 }

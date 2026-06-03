@@ -1,8 +1,8 @@
 package pricing.application;
 
 import pricing.api.ErrorCode;
-import pricing.api.dto.CalculateOrderRequest;
-import pricing.api.dto.OrderItemRequest;
+import pricing.application.command.CalculateOrderCommand;
+import pricing.application.command.OrderLineCommand;
 import pricing.application.exception.PricingException;
 import pricing.application.port.ActivePromotionPort;
 import pricing.application.port.CouponResolutionPort;
@@ -61,15 +61,15 @@ class OrderPricingServiceTest {
                 ));
         when(orderPersistencePort.save(any())).thenReturn(UUID.randomUUID());
 
-        var request = new CalculateOrderRequest(
+        var command = new CalculateOrderCommand(
                 CustomerType.VIP,
-                List.of(new OrderItemRequest("A100", new BigDecimal("100"), 2)),
+                List.of(new OrderLineCommand("A100", new BigDecimal("100"), 2)),
                 "SUMMER10"
         );
 
-        var response = orderPricingService.calculate(request);
+        var result = orderPricingService.calculate(command);
 
-        assertEquals(new BigDecimal("250"), response.subtotal());
+        assertEquals(new BigDecimal("250"), result.subtotal());
         verify(orderPersistencePort).save(any());
         verify(couponResolutionPort).resolve("SUMMER10");
     }
@@ -88,13 +88,13 @@ class OrderPricingServiceTest {
                 ));
         when(orderPersistencePort.save(any())).thenReturn(UUID.randomUUID());
 
-        var request = new CalculateOrderRequest(
+        var command = new CalculateOrderCommand(
                 CustomerType.REGULAR,
-                List.of(new OrderItemRequest("A100", new BigDecimal("100"), 1)),
+                List.of(new OrderLineCommand("A100", new BigDecimal("100"), 1)),
                 "SUMMER10 "
         );
 
-        orderPricingService.calculate(request);
+        orderPricingService.calculate(command);
 
         verify(couponResolutionPort).resolve("SUMMER10");
     }
@@ -105,15 +105,15 @@ class OrderPricingServiceTest {
         when(couponResolutionPort.resolve("BADCODE"))
                 .thenThrow(new PricingException(ErrorCode.COUPON_NOT_FOUND, "Coupon code BADCODE was not found"));
 
-        var request = new CalculateOrderRequest(
+        var command = new CalculateOrderCommand(
                 CustomerType.VIP,
-                List.of(new OrderItemRequest("A100", new BigDecimal("100"), 2)),
+                List.of(new OrderLineCommand("A100", new BigDecimal("100"), 2)),
                 "BADCODE"
         );
 
         PricingException ex = assertThrows(
                 PricingException.class,
-                () -> orderPricingService.calculate(request));
+                () -> orderPricingService.calculate(command));
 
         assertEquals(ErrorCode.COUPON_NOT_FOUND, ex.getErrorCode());
         verify(orderPersistencePort, never()).save(any());

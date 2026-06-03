@@ -1,7 +1,7 @@
 package pricing.application;
 
-import pricing.api.dto.CalculateOrderRequest;
-import pricing.api.dto.OrderCalculationResponse;
+import pricing.application.command.CalculateOrderCommand;
+import pricing.application.command.OrderLineCommand;
 import pricing.application.port.ActivePromotionPort;
 import pricing.application.port.CouponResolutionPort;
 import pricing.application.port.OrderPersistencePort;
@@ -20,7 +20,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 @Service
-public class OrderPricingService {
+public class OrderPricingService implements OrderPricingUseCase {
 
     private final ActivePromotionPort activePromotionPort;
     private final CouponResolutionPort couponResolutionPort;
@@ -42,9 +42,10 @@ public class OrderPricingService {
         this.orderPersistencePort = orderPersistencePort;
     }
 
+    @Override
     @Transactional
-    public OrderCalculationResponse calculate(CalculateOrderRequest request) {
-        List<LineItem> lineItems = request.items().stream()
+    public PricingResult calculate(CalculateOrderCommand command) {
+        List<LineItem> lineItems = command.items().stream()
                 .map(i -> new LineItem(i.sku(), i.price(), i.quantity()))
                 .toList();
 
@@ -52,11 +53,11 @@ public class OrderPricingService {
                 .map(i -> i.price().multiply(BigDecimal.valueOf(i.quantity())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        String couponCode = normalizeCouponCode(request.couponCode());
+        String couponCode = normalizeCouponCode(command.couponCode());
         PricingContext context = new PricingContext(
                 subtotal,
                 lineItems,
-                request.customerType(),
+                command.customerType(),
                 couponCode
         );
 
@@ -65,8 +66,8 @@ public class OrderPricingService {
         List<PromotionRule> rules = promotionRuleFactory.createRules(activePromotions, coupon);
         PricingResult result = promotionChain.apply(context, rules);
 
-        orderPersistencePort.save(toOrder(request, lineItems, result, couponCode));
-        return OrderCalculationResponse.from(result);
+        orderPersistencePort.save(toOrder(command, lineItems, result, couponCode));
+        return result;
     }
 
     private static String normalizeCouponCode(String couponCode) {
@@ -77,28 +78,32 @@ public class OrderPricingService {
     }
 
     private static Order toOrder(
-            CalculateOrderRequest request,
+            CalculateOrderCommand command,
             List<LineItem> lineItems,
             PricingResult result,
             String couponCode
     ) {
         List<OrderLine> orderLines = lineItems.stream()
-                .map(item -> new OrderLine(
-                        item.sku(),
-                        item.price(),
-                        item.quantity(),
-                        item.price().multiply(BigDecimal.valueOf(item.quantity()))
-                ))
+                .map(OrderPricingService::toOrderLine)
                 .toList();
 
         return new Order(
                 null,
-                request.customerType(),
+                command.customerType(),
                 couponCode,
                 result.subtotal(),
                 result.totalDiscount(),
                 result.finalPrice(),
                 orderLines
+        );
+    }
+
+    private static OrderLine toOrderLine(LineItem item) {
+        return new OrderLine(
+                item.sku(),
+                item.price(),
+                item.quantity(),
+                item.price().multiply(BigDecimal.valueOf(item.quantity()))
         );
     }
 }

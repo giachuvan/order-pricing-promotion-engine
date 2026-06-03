@@ -52,7 +52,10 @@ pricing/
 │   │   ├── ActivePromotionPort
 │   │   ├── CouponResolutionPort
 │   │   ├── OrderPersistencePort
-│   │   └── PromotionManagementPort
+│   │   ├── PromotionManagementPort
+│   │   └── ProductCatalogPort
+│   ├── command/              CalculateOrderCommand, CreatePromotionCommand
+│   ├── OrderPricingUseCase, PromotionUseCase (interfaces)
 │   └── OrderPricingService, PromotionService
 ├── domain/
 │   ├── model/                Order, Promotion, CouponDiscount, …
@@ -60,7 +63,7 @@ pricing/
 │   └── promotion/            PromotionRule, PromotionChain, PromotionRuleFactory
 └── infrastructure/
     ├── persistence/          Entities, repositories, *Adapter implements ports
-    └── promotion/              Rule classes, DbPromotionRuleFactory
+    └── promotion/              Rule classes, *RuleSource registry, RegistryPromotionRuleFactory
 ```
 
 ### Port → adapter mapping
@@ -71,39 +74,53 @@ pricing/
 | `CouponResolutionPort` | `CouponResolutionAdapter` | Resolve coupon code → `CouponDiscount` |
 | `OrderPersistencePort` | `OrderPersistenceAdapter` | Persist domain `Order` → JPA |
 | `PromotionManagementPort` | `PromotionManagementAdapter` | List/create promotions as domain `Promotion` |
-| `PromotionRuleFactory` | `DbPromotionRuleFactory` | Build rule pipeline from domain types |
+| `ProductCatalogPort` | `ProductCatalogAdapter` | List reference products from seed catalog |
+| `PromotionRuleFactory` | `RegistryPromotionRuleFactory` | Assembles pipeline from all `PromotionRuleSource` `@Component` beans |
 
-**Flow:** `POST /orders/calculate` → `OrderPricingService` → ports + `PromotionChain` → `OrderPersistencePort.save(Order)`.
+**Flow:** `POST /orders/calculate` → controller maps DTO → `CalculateOrderCommand` → `OrderPricingUseCase` → ports + `PromotionChain` → `OrderPersistencePort.save(Order)`.
 
-**Discount order:** PERCENTAGE → VIP → COUPON → BUY2 (`DbPromotionRuleFactory` javadoc). Independent discounts on original subtotal.
+**Discount order:** PERCENTAGE → VIP → COUPON → BUY2 (`@PipelineOrder` on each `PromotionRuleSource`). New rule types: add a `@Component` `PromotionRuleSource` with `@PipelineOrder` — no change to `RegistryPromotionRuleFactory`. Independent discounts on original subtotal.
 
 ## 3. Design patterns
 
 | Pattern | Where |
 |---------|--------|
-| **Strategy** | `PromotionRule` + rule implementations in infrastructure |
-| **Chain of Responsibility** | `PromotionChain` |
-| **Factory** | `PromotionRuleFactory` → `DbPromotionRuleFactory` |
-| **Builder** | `PricingResultBuilder` |
+| **Strategy** | `PromotionRule.apply(PricingContext)` — `PercentageDiscountRule`, `VipDiscountRule`, `CouponRule`, `Buy2Get1FreeRule` (eligibility inside each rule, `Optional.empty()` when N/A) |
+| **Chain of Responsibility** | `PromotionChainHandler.handle(context, continuation)` → `PromotionRuleChainHandler` → `PromotionChainContinuation.proceed()` (explicit next step, not a bare for-loop) |
+| **Factory** | `PromotionRuleFactory` → `RegistryPromotionRuleFactory` |
+| **Registry** | Spring-discovered `PromotionRuleSource` `@Component` beans, ordered by `@PipelineOrder` (10 → 20 → 30 → 40) |
+| **Builder** | `PricingResultBuilder` accumulates `DiscountLine`s and computes totals |
 | **Repository** | Spring Data (inside adapters only) |
-| **Adapter** | All `*Adapter` classes + `GlobalExceptionHandler` |
+| **Adapter** | Port `*Adapter` classes; `PromotionRuleChainHandler` adapts Strategy → CoR link |
 
 ## 4. SOLID
 
 - **SRP:** One rule per class; adapters only map/persist.
-- **OCP:** New promotion = new rule class + factory registration.
+- **OCP:** New promotion = new rule class + new `PromotionRuleSource` `@Component` (registry picks it up automatically).
 - **LSP:** Rules interchangeable via `PromotionRule`.
 - **ISP:** Focused ports (`CouponResolutionPort` vs `PromotionManagementPort`).
-- **DIP:** Application services depend on abstractions; infrastructure implements them. **No JPA imports in `application`.**
+- **DIP:** Controllers depend on `OrderPricingUseCase` / `PromotionUseCase`; services depend on port interfaces; infrastructure implements ports. **No JPA or API DTO imports in `application`.**
 
 ## 5. Database design
 
-- **promotions** — rule config; partial unique index on `(type) WHERE active = true`
-- **coupons** — flat discounts by code
-- **orders** / **order_items** — UUID order id, BIGSERIAL line id, `line_total` app-calculated
-- **products** — reference catalog (optional validation later)
+- **promotions** — rule config; partial unique index on `(type) WHERE active = true`; `created_at` / `updated_at` (TIMESTAMPTZ); `@Version` for optimistic locking
+- **coupons** — flat discounts by code; `updated_at`; `@Version`
+- **orders** / **order_items** — UUID order id, BIGSERIAL line id, `line_total` app-calculated; `@PrePersist` on `OrderEntity` for `created_at`
+- **products** — reference catalog (`GET /api/v1/products`)
 
-Liquibase: `001-schema.sql`, `002-seed.sql`, `003-promotions-unique-active-index.sql`
+**Integrity (SQL CHECK constraints in `001-schema.sql`):**
+
+| Table | Constraint |
+|-------|------------|
+| `products` | `price > 0` |
+| `order_items` | `price > 0`, `quantity > 0` |
+| `coupons` | `discount_amount > 0` |
+| `promotions` | `value > 0` |
+| `orders` | `subtotal`, `total_discount`, `final_price` ≥ 0 |
+
+**Liquibase (SQL only):** `001-schema.sql` (schema + checks + `version` / `updated_at`), `002-seed.sql`, `003-promotions-unique-active-index.sql`
+
+**JPA audit:** `@PrePersist` / `@PreUpdate` on `PromotionEntity` and `CouponEntity` maintain `updated_at` (no DB trigger required).
 
 ## API reference
 
@@ -112,8 +129,13 @@ Liquibase: `001-schema.sql`, `002-seed.sql`, `003-promotions-unique-active-index
 | POST | `/api/v1/orders/calculate` | Calculate and persist order |
 | GET | `/api/v1/promotions` | List active promotions |
 | POST | `/api/v1/promotions` | Create promotion (201 Created) |
+| GET | `/api/v1/products` | List reference product catalog (seed data) |
 
 **Envelope:** `{ "data": ..., "error": null }` or `{ "data": null, "error": { "code", "message" } }`.
+
+**HTTP status mapping:** `COUPON_NOT_FOUND` → **404**; `COUPON_INACTIVE`, `COUPON_EXPIRED`, `PROMOTION_CONFLICT`, validation → **400**; unexpected errors → **500**. `finalPrice` is floored at **0** when discounts exceed subtotal.
+
+**OpenAPI:** SpringDoc UI at http://localhost:8080/swagger-ui.html (spec: `/v3/api-docs`).
 
 ### Example calculate
 
@@ -138,7 +160,7 @@ Expected: `finalPrice` 102.50, `totalDiscount` 147.50, four discount lines.
 docker compose up --build
 ```
 
-API: http://localhost:8080
+API: http://localhost:8080 — OpenAPI UI: http://localhost:8080/swagger-ui.html
 
 ## 7. How to run the tests
 
@@ -148,8 +170,10 @@ mvn test
 
 | What runs | Notes |
 |-----------|--------|
-| **Unit tests** (`pricing.application`, `pricing.domain`, `pricing.infrastructure.*`) | Always run; no Spring context on service/rule tests (Mockito mocks ports). |
-| **Integration test** (`pricing.integration.OrderCalculateIntegrationTest`) | Picked up by the same `mvn test` (Surefire). Uses Testcontainers + `@SpringBootTest`. |
+| **Unit tests** (`pricing.application`, `pricing.domain`, `pricing.infrastructure.*`) | Rule tests (incl. parameterized Buy2), chain combined + floor-at-zero, service tests (Mockito). |
+| **`@WebMvcTest`** (`OrderControllerWebTest`, `PromotionControllerWebTest`) | Controller validation and response mapping without full context. |
+| **Integration tests** (`pricing.integration.*`) | Testcontainers + MockMvc: calculate (coupon 404/expired/inactive), promotions CRUD paths, products, concurrency. |
+| **Concurrency IT** (`ConcurrencyIntegrationTest`) | Parallel promotion create + parallel calculate. |
 
 **Docker:** Integration tests use `@Testcontainers(disabledWithoutDocker = true)`. If Docker is **not** running, that class is **skipped** and the build still **passes** — you only get unit coverage. Start Docker (daemon reachable) before `mvn test` if you want the full calculate endpoint asserted against real PostgreSQL.
 
@@ -160,7 +184,7 @@ mvn test
 | Requirement | Status |
 |-------------|--------|
 | Challenge 2 — Order Pricing & Promotion Engine | Done |
-| REST API — 3 endpoints + envelope | Done |
+| REST API — required endpoints + envelope + products catalog | Done |
 | 4 promotion rules (Strategy + Factory + Chain) | Done |
 | PostgreSQL + Liquibase SQL | Done |
 | `docker compose up` | Done |
@@ -170,7 +194,7 @@ mvn test
 ## 8. Trade-offs
 
 - **Discount stacking:** Independent discounts on original subtotal (per assignment example).
-- **DTOs in application:** Services accept API DTOs (`CalculateOrderRequest`, `CreatePromotionRequest`) directly to avoid a thin mapping layer with no added logic at assignment scale. Domain types (`Order`, `PricingContext`, `PromotionDefinition`) are used inside pricing and persistence. In a larger codebase, dedicated application commands/queries would sit between the API layer and services, with mapping at the controller or a small assembler.
+- **API mapping at the edge:** Controllers map request DTOs to application commands (`OrderRequestMapper`, `PromotionRequestMapper`); use cases accept commands and return domain results (`PricingResult`, `Promotion`). Response DTOs are built only in the API layer.
 - **No promotion PUT / coupon CRUD:** Out of assignment scope.
 - **Integration tests:** May use `OrderRepository` directly at the outer test boundary to verify DB state.
 
@@ -184,13 +208,24 @@ The current implementation is correct for assignment scope (single Postgres inst
 | **Stale or wrong discounts after config change** | No cache today — safe but slow. Naive caching without invalidation would serve outdated rules. | Versioned cache keys (`promotions:v3`), pub/sub or message on promotion create/update to bust cache; optional read-through with `If-None-Match` on internal config API. |
 | **Duplicate calculate / retries** | Clients retrying the same checkout can insert **multiple order rows** for the same logical checkout (no idempotency key). | Accept `Idempotency-Key` header; store key → result in Redis or DB unique constraint; return cached pricing response on replay. |
 | **Write amplification on calculate** | Persist-on-every-calculate grows `orders` quickly and adds write latency to the critical path. | Split **pricing** (read-only, fast) from **order capture** (async): return quote immediately, persist via outbox/Kafka if the business allows eventual persistence; or persist only on “place order”, not on every preview. |
-| **Concurrent promotion admin** | Two operators creating the same active `type` can race; app check + DB partial unique index (`003-promotions-unique-active-index.sql`) — one fails with conflict (correct) but UX is 400 under load. | Keep DB constraint as source of truth; return clear `PROMOTION_CONFLICT`; optional retry with `active: false` on old row + activate new in one transactional admin API. |
+| **Concurrent promotion admin** | Two operators creating the same active `type` can race past `existsActiveByType()`. | Partial unique index + `DataIntegrityViolationException` → `PROMOTION_CONFLICT` (not 500); `@Version` on promotion/coupon rows; `@Retryable` on `PromotionService.create()` for optimistic lock failures. |
 | **Large carts** | Buy‑2‑get‑1 and subtotal are O(lines); very large baskets increase CPU per request. | Cap line count at API gateway; batch line processing; pre-aggregate per-SKU quantities before rules run. |
 | **Monolith + single Postgres** | Vertical scaling ceiling; long-running migrations block deploys; heavy reporting on the same DB competes with calculate OLTP. | Route promotion/coupon reads to a **read replica** once caching is in place; **partition or archive** old `orders` rows; run analytics from replica or warehouse export — no separate microservice required at this size. |
 | **No back-pressure** | Flash sales spike calculate traffic; no rate limiting. | Rate limit per API key/customer at gateway; queue non-interactive repricing; circuit-breaker on DB. |
 
-**Concurrency (matches current code):** `calculate()` uses a **single read-write transaction** — not a separate `@Transactional(readOnly = true)` phase for loading promotions. Concurrent calculate requests do not corrupt promotion config (reads are consistent within the transaction), but each request still contends for connections and row inserts on `orders`. `PromotionService.listActive()` is read-only; `create()` plus the partial unique index in `003-promotions-unique-active-index.sql` prevent duplicate active types under admin races. Under higher load, caching promotion/coupon reads, idempotency on calculate, and optional “quote without persist” matter more than changing rule math.
+## Concurrency safety
+
+| Mechanism | Where |
+|-----------|--------|
+| **Transaction boundaries** | `OrderPricingService.calculate()` — one read-write `@Transactional`; `PromotionService.listActive()` — `readOnly = true`; `PromotionService.create()` — write transaction |
+| **Isolation** | Spring default (**PostgreSQL `READ COMMITTED`**): each `calculate()` sees committed promotion/coupon rows as of statement execution; order insert is atomic with the same transaction |
+| **Admin duplicate active type** | `existsActiveByType()` + partial unique index `idx_promotions_type_active`; races mapped to **`PROMOTION_CONFLICT`** via `GlobalExceptionHandler` + `DataIntegrityViolationException` |
+| **Optimistic locking** | `@Version` on `PromotionEntity` / `CouponEntity` (`version` column in `001-schema.sql`) for safe concurrent updates when update APIs exist |
+| **Retry** | `@EnableRetry` + `@Retryable` on `PromotionService.create()` for `OptimisticLockingFailureException` (max 3 attempts, 50 ms backoff) |
+| **Proof** | `ConcurrencyIntegrationTest` — parallel promotion create and parallel calculate (requires Docker) |
+
+Concurrent `calculate()` requests do not share mutable pricing state; each persists a new `orders` row. Coupon codes have **no usage limit** in this assignment (unlimited concurrent applies of `SUMMER10` is correct). Under higher load, caching reads, idempotency keys, and optional quote-without-persist matter more than changing rule math.
 
 ## Tech stack
 
-Java 17, Spring Boot 3.2, PostgreSQL 16, JPA, Liquibase, JUnit 5, Mockito, Testcontainers.
+Java 17, Spring Boot 3.2, PostgreSQL 16, JPA, Liquibase, SpringDoc OpenAPI, JUnit 5, Mockito, Testcontainers.

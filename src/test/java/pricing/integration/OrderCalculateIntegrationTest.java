@@ -3,6 +3,8 @@ package pricing.integration;
 import pricing.domain.model.CustomerType;
 import pricing.infrastructure.persistence.entity.OrderEntity;
 import pricing.infrastructure.persistence.entity.OrderItemEntity;
+import pricing.infrastructure.persistence.entity.CouponEntity;
+import pricing.infrastructure.persistence.repository.CouponRepository;
 import pricing.infrastructure.persistence.repository.OrderRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +20,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -54,6 +57,9 @@ class OrderCalculateIntegrationTest {
 
     @Autowired
     private OrderRepository orderRepository;
+
+    @Autowired
+    private CouponRepository couponRepository;
 
     @BeforeEach
     void cleanOrders() {
@@ -133,5 +139,83 @@ class OrderCalculateIntegrationTest {
         OrderEntity order = orders.get(0);
         assertNull(order.getCouponCode());
         assertEquals(0, new BigDecimal("112.50").compareTo(order.getFinalPrice()));
+    }
+
+    @Test
+    void calculateWithUnknownCouponReturns404() throws Exception {
+        String body = """
+                {
+                  "customerType": "VIP",
+                  "items": [
+                    { "sku": "A100", "price": 100, "quantity": 1 }
+                  ],
+                  "couponCode": "UNKNOWN"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/orders/calculate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("COUPON_NOT_FOUND"))
+                .andExpect(jsonPath("$.data").value(nullValue()));
+
+        assertEquals(0, orderRepository.count());
+    }
+
+    @Test
+    void calculateWithExpiredCouponReturns400() throws Exception {
+        CouponEntity expired = new CouponEntity();
+        expired.setCode("EXPIRED1");
+        expired.setDiscountAmount(new BigDecimal("5"));
+        expired.setActive(true);
+        expired.setExpiryDate(LocalDate.of(2020, 1, 1));
+        couponRepository.save(expired);
+
+        String body = """
+                {
+                  "customerType": "VIP",
+                  "items": [
+                    { "sku": "A100", "price": 100, "quantity": 1 }
+                  ],
+                  "couponCode": "EXPIRED1"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/orders/calculate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("COUPON_EXPIRED"));
+
+        assertEquals(0, orderRepository.count());
+    }
+
+    @Test
+    void calculateWithInactiveCouponReturns400() throws Exception {
+        CouponEntity inactive = new CouponEntity();
+        inactive.setCode("INACTIVE1");
+        inactive.setDiscountAmount(new BigDecimal("5"));
+        inactive.setActive(false);
+        inactive.setExpiryDate(LocalDate.of(2099, 12, 31));
+        couponRepository.save(inactive);
+
+        String body = """
+                {
+                  "customerType": "VIP",
+                  "items": [
+                    { "sku": "A100", "price": 100, "quantity": 1 }
+                  ],
+                  "couponCode": "INACTIVE1"
+                }
+                """;
+
+        mockMvc.perform(post("/api/v1/orders/calculate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("COUPON_INACTIVE"));
+
+        assertEquals(0, orderRepository.count());
     }
 }

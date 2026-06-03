@@ -7,7 +7,6 @@ import pricing.infrastructure.persistence.repository.PromotionRepository;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.List;
 
 @Component
@@ -37,7 +36,6 @@ public class PromotionManagementAdapter implements PromotionManagementPort {
         entity.setType(type);
         entity.setValue(value);
         entity.setActive(active);
-        entity.setCreatedAt(Instant.now());
         return toDomain(promotionRepository.save(entity));
     }
 

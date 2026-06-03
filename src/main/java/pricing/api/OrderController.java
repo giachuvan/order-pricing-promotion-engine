@@ -2,7 +2,8 @@ package pricing.api;
 
 import pricing.api.dto.CalculateOrderRequest;
 import pricing.api.dto.OrderCalculationResponse;
-import pricing.application.OrderPricingService;
+import pricing.api.mapper.OrderRequestMapper;
+import pricing.application.OrderPricingUseCase;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -13,14 +14,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/orders")
 public class OrderController {
 
-    private final OrderPricingService orderPricingService;
+    private final OrderPricingUseCase orderPricingUseCase;
 
-    public OrderController(OrderPricingService orderPricingService) {
-        this.orderPricingService = orderPricingService;
+    public OrderController(OrderPricingUseCase orderPricingUseCase) {
+        this.orderPricingUseCase = orderPricingUseCase;
     }
 
     @PostMapping("/calculate")
     public ApiResponse<OrderCalculationResponse> calculate(@Valid @RequestBody CalculateOrderRequest request) {
-        return ApiResponse.success(orderPricingService.calculate(request));
+        var result = orderPricingUseCase.calculate(OrderRequestMapper.toCommand(request));
+        return ApiResponse.success(OrderCalculationResponse.from(result));
     }
 }
