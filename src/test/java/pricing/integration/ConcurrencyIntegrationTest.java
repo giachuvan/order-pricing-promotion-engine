@@ -24,7 +24,6 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -91,15 +90,13 @@ class ConcurrencyIntegrationTest {
         CountDownLatch start = new CountDownLatch(1);
 
         try {
-            List<Callable<ResponseEntity<String>>> tasks = new ArrayList<>();
+            List<Future<ResponseEntity<String>>> futures = new ArrayList<>();
             for (int i = 0; i < threads; i++) {
-                tasks.add(() -> {
+                futures.add(executor.submit(() -> {
                     start.await();
                     return postJson("/api/v1/promotions", body);
-                });
+                }));
             }
-
-            List<Future<ResponseEntity<String>>> futures = executor.invokeAll(tasks);
             start.countDown();
 
             int created = 0;
@@ -159,15 +156,13 @@ class ConcurrencyIntegrationTest {
         CountDownLatch start = new CountDownLatch(1);
 
         try {
-            List<Callable<ResponseEntity<String>>> tasks = new ArrayList<>();
+            List<Future<ResponseEntity<String>>> futures = new ArrayList<>();
             for (int i = 0; i < threads; i++) {
-                tasks.add(() -> {
+                futures.add(executor.submit(() -> {
                     start.await();
                     return postJson("/api/v1/orders/calculate", body);
-                });
+                }));
             }
-
-            List<Future<ResponseEntity<String>>> futures = executor.invokeAll(tasks);
             start.countDown();
 
             for (Future<ResponseEntity<String>> future : futures) {
